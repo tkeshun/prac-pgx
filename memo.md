@@ -26,7 +26,8 @@ go: added github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761
 go: added github.com/jackc/pgx/v5 v5.7.1
 go: added golang.org/x/crypto v0.27.0
 go: added golang.org/x/text v0.18.0
-```　
+```
+
 
 ### DB
 
@@ -126,11 +127,12 @@ Pool.muxを持つ
 
 リソースの取得 (Acquire)
 
-acquireSem を使ってリソースの取得許可を確認
-未使用リソースがある場合は idleResources から取得
-リソースが不足している場合は Constructor を使って新しいリソースを生成
-新規接続時には接続リソースを作り、allResourcesにリソースを追加する
-/home/shun/go/pkg/mod/github.com/jackc/puddle/v2@v2.2.2/pool.go
+acquireSem を使ってリソースの取得許可を確認  
+未使用リソースがある場合は idleResources から取得  
+リソースが不足している場合は Constructor を使って新しいリソースを生成  
+新規接続時には接続リソースを作り、allResourcesにリソースを追加する  
+/home/shun/go/pkg/mod/github.com/jackc/puddle/v2@v2.2.2/pool.go  
+
 ```
 func (p *Pool[T]) createNewResource() *Resource[T] {
 	res := &Resource[T]{
@@ -170,13 +172,127 @@ func main() {
 
 ### プール設定
 
+```
+	config.MaxConns = 10                        // 最大接続数、初期設定は4 もしくは runtime.NumCPU()の数、プールしてる接続が必要になると新しい接続は待機状態になる
+	config.MinConns = 2                         // 最小接続数、設定数が低いとMaxConnLifetimeが過ぎるまでもしくは、ヘルスチェックがあるまで、Poolが空の状態になり接続が待機される可能性がある
+	config.MaxConnIdleTime = 10 * time.Minute   // 各接続が維持される最大時間、この時間を超えると新しい接続に置き換えられる
+	config.MaxConnIdleTime = 10 * time.Minute   // アイドル状態の接続が維持される最大時間、これを超えるとアイドル接続はクローズされる。
+	config.HealthCheckPeriod = 15 * time.Second // 接続プールのヘルスチェック間隔、無効な接続を取り除いたり、MinConnsに足りない場合、接続を補充したりする
+```
+
 ### 接続プールのモニタリング
+
+`pool.Stat()`で接続プールの統計情報を取得できる
+
+StatはPoolに格納されてる変数から情報を抜いてる
+
+（例）pgxpool-monitor/main.go
+
+- TotalConns: プール内の総接続数  
+- IdleConns: アイドル状態（未使用）の接続数  
+- AcquiredConns: 使用中の接続数  
+- MaxConns: プール内の最大接続数  
+
+```
+$ go run main.go 
+Pool Stats - TotalConns: 7, IdleConns: 0, AcquiredConns: 0, MaxConns: 10
+Current time: 2024-11-30 00:38:53.538471 +0900 JST
+Current time: 2024-11-30 00:38:53.53847 +0900 JST
+Current time: 2024-11-30 00:38:53.538464 +0900 JST
+Current time: 2024-11-30 00:38:53.539802 +0900 JST
+Current time: 2024-11-30 00:38:53.540358 +0900 JST
+Pool Stats - TotalConns: 7, IdleConns: 7, AcquiredConns: 0, MaxConns: 10
+Pool Stats - TotalConns: 7, IdleConns: 7, AcquiredConns: 0, MaxConns: 10
+Pool Stats - TotalConns: 7, IdleConns: 7, AcquiredConns: 0, MaxConns: 10
+Pool Stats - TotalConns: 7, IdleConns: 7, AcquiredConns: 0, MaxConns: 10
+```
+
+ 接続中の統計情報を見る
+
+```
+ go run main.go 
+Pool Stats - TotalConns: 6, IdleConns: 0, AcquiredConns: 0, MaxConns: 10
+2024/11/30 00:42:50 Executing pg_sleep(3)...
+2024/11/30 00:42:50 Executing pg_sleep(3)...
+2024/11/30 00:42:50 Executing pg_sleep(3)...
+2024/11/30 00:42:50 Executing pg_sleep(3)...
+2024/11/30 00:42:50 Executing pg_sleep(3)...
+Pool Stats - TotalConns: 7, IdleConns: 2, AcquiredConns: 5, MaxConns: 10
+Current time: 0001-01-01 00:00:00 +0000 UTC
+Current time: 0001-01-01 00:00:00 +0000 UTC
+Current time: 0001-01-01 00:00:00 +0000 UTC
+Current time: 0001-01-01 00:00:00 +0000 UTC
+Current time: 0001-01-01 00:00:00 +0000 UTC
+Pool Stats - TotalConns: 7, IdleConns: 7, AcquiredConns: 0, MaxConns: 10
+Pool Stats - TotalConns: 7, IdleConns: 7, AcquiredConns: 0, MaxConns: 10
+Pool Stats - TotalConns: 7, IdleConns: 7, AcquiredConns: 0, MaxConns: 10
+```
 
 ## 基本的なクエリ操作
 
 ### QueryRow
 
+1行限定、error型しか返さない
+Scanで指定した変数に値を格納する
+
+```
+	// SELECT(単一行)
+	var name string
+	var age int
+	errQueryRow := pool.QueryRow(context.Background(), "SELECT name, age FROM users WHERE id=$1", 1).Scan(&name, &age)
+	if errQueryRow != nil {
+		log.Fatalf("QueryRow failed: %v", err)
+	}
+	log.Printf("Name: %s, Age: %d", name, age)
+
+```
+
 ### Query
+
+複数行SELECTする
+返り値の変数のnext()を使って値を取り出す。
+```
+	// SELECT（複数行）
+	rows, err := pool.Query(context.Background(), "SELECT id, name, age FROM users")
+	if err != nil {
+		log.Fatalf("Query failed: %v", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var id int
+		var name string
+		var age int
+		err := rows.Scan(&id, &name, &age)
+		if err != nil {
+			log.Fatalf("Row scan failed: %v", err)
+		}
+		log.Printf("ID: %d, Name: %s, Age: %d", id, name, age)
+	}
+```
+
+### Exec
+
+### CommandTag型
+
+CommandTag
+pgx.Exec や pgx.CopyFrom の結果として返される  
+CommandTag 型には、クエリの実行結果や影響を受けた行数に関する情報が含まれる  
+
+主なメソッド
+RowsAffected: 影響を受けた行数を返す
+Select: 実行したクエリが SELECT かどうかを判定
+Insert: 実行したクエリが INSERT かどうかを判定
+Update: 実行したクエリが UPDATE かどうかを判定
+Delete: 実行したクエリが DELETE かどうかを判定
+
+例）
+```
+	// Delete: 実行したクエリが DELETE かどうかを判定
+	if delete.Delete() {
+		log.Println("DELETE")
+	}
+```
 
 ## トランザクション
 
@@ -190,6 +306,9 @@ func main() {
 
 
 - Rollback
+
+### 分離レベルの変更方法
+
 
 
 ## Batch API(バッチ処理)
